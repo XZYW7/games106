@@ -6,6 +6,11 @@
 *.user
 *.sln.docstates
 *.spv
+*.zip
+data/models
+data/shaders
+data/textures
+data/buster_drone
 
 # Build results
 [Dd]ebug/
