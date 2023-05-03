@@ -45,7 +45,8 @@ public:
 		glm::vec3 normal;
 		glm::vec2 uv;
 		glm::vec3 color;
-		glm::vec3 tangent;
+		glm::vec4 tangent;
+		size_t jointIndex;
 	};
 
 	// Single vertex buffer for all primitives
@@ -87,8 +88,7 @@ public:
 		glm::vec3 scale { 1.0f };
 		glm::quat rotation {};
 		glm::mat4 matrix;
-		vks::Buffer ssbo;
-		VkDescriptorSet descriptorSet;
+
 
 		glm::mat4 getLocalMatrix() {
 			return glm::translate(glm::mat4(1.0f), translation) * glm::mat4(rotation) * glm::scale(glm::mat4(1.0f), scale)*matrix;//
@@ -101,6 +101,11 @@ public:
 		}
 	};
 
+	struct Skin {
+		std::vector<glm::mat4> NodeModelMatrices;
+		vks::Buffer            ssbo;
+		VkDescriptorSet        descriptorSet;
+	} skin;
 	// A glTF material stores information in e.g. the texture that is attached to it and colors
 	struct Material {
 		glm::vec4 baseColorFactor = glm::vec4(1.0f);
@@ -269,6 +274,7 @@ public:
 		}
 		if (inputNode.matrix.size() == 16) {
 			node->matrix = glm::make_mat4x4(inputNode.matrix.data());
+			node->matrix = node->getLocalMatrix();
 		};
 
 		// Load node's children
@@ -330,6 +336,7 @@ public:
 						vert.uv = texCoordsBuffer ? glm::make_vec2(&texCoordsBuffer[v * 2]) : glm::vec3(0.0f);
 						vert.color = glm::vec3(1.0f);
 						vert.tangent = tangentsBuffer ? glm::make_vec4(&tangentsBuffer[v * 4]) : glm::vec4(0.0f);
+						vert.jointIndex = nodeIndex;
 						vertexBuffer.push_back(vert);
 					}
 				}
@@ -383,6 +390,14 @@ public:
 		else {
 			nodes.push_back(node);
 		}
+		skin.NodeModelMatrices.emplace_back(getNodeMatrix(node));
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&skin.ssbo,
+			sizeof(glm::mat4)* skin.NodeModelMatrices.size(),
+			skin.NodeModelMatrices.data()));
+		VK_CHECK_RESULT(skin.ssbo.map());
 	}
 	VulkanglTFModel::Node* VulkanglTFModel::findNode(Node* parent, uint32_t index) {
 		Node* nodeFound = nullptr;
@@ -419,6 +434,7 @@ public:
 	}
 
 	void VulkanglTFModel::loadAnimations(tinygltf::Model& input) {
+
 		animations.resize(input.animations.size());
 
 		for (size_t i = 0; i < input.animations.size(); i++) {
@@ -492,6 +508,7 @@ public:
 				dstChannel.node = nodeFromIndex(glTFChannel.target_node);
 			}
 		}
+
 	}
 
 	/*
@@ -504,14 +521,14 @@ public:
 	void VulkanglTFModel::updateJoints(VulkanglTFModel::Node* node) {
 
 		glm::mat4 inverseTransform = glm::inverse(getNodeMatrix(node));
-		glm::mat4 jointMatrices = node->matrix;
-
+		skin.NodeModelMatrices[node->index] = getNodeMatrix(node);
 		// Update ssbo
-		node->ssbo.copyTo(&jointMatrices, sizeof(glm::mat4));
+		//skin.ssbo.copyTo(&jointMatrices, sizeof(glm::mat4));
 		
 		for (auto& child : node->children) {
 			updateJoints(child);
 		}
+
 	}
 	void VulkanglTFModel::updateAnimation(float deltaTime) {
 		if (activeAnimation > static_cast<uint32_t>(animations.size()) - 1) {
@@ -560,8 +577,10 @@ public:
 			}
 		}
 		for (auto& node : nodes) {
-			//updateJoints(node);
+			updateJoints(node);
+			
 		}
+		skin.ssbo.copyTo(skin.NodeModelMatrices.data(), sizeof(glm::mat4) * skin.NodeModelMatrices.size());
 	}
 	// Draw a single node including child nodes (if present)
 	void drawNode(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VulkanglTFModel::Node* node)
@@ -596,11 +615,12 @@ public:
 					//vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &images[MR_texture.imageIndex].descriptorSet, 0, nullptr);
 				}
 			}
-			//vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &node->descriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &skin.descriptorSet, 0, nullptr);
 		}
 		for (auto& child : node->children) {
 			drawNode(commandBuffer, pipelineLayout, child);
 		}
+
 	}
 
 	// Draw the glTF scene starting at the top-level-nodes
@@ -614,6 +634,7 @@ public:
 		for (auto& node : nodes) {
 			drawNode(commandBuffer, pipelineLayout, node);
 		}
+		updateAnimation(0.0);
 	}
 
 };
@@ -631,7 +652,7 @@ public:
 		struct Values {
 			glm::mat4 projection;
 			glm::mat4 view;
-			glm::vec4 lightPos = glm::vec4(5.0f, 5.0f, -5.0f, 1.0f);
+			glm::vec4 lightPos = glm::vec4(-5.0f, 5.0f, 5.0f, 4.0f);
 			glm::vec4 viewPos;
 		} values;
 	} shaderData;
@@ -849,9 +870,10 @@ public:
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
 			// One combined image sampler per model image/texture
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(glTFModel.images.size())),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)
 		};
 		// One set for matrices and one per model image/texture
-		const uint32_t maxSetCount = static_cast<uint32_t>(glTFModel.images.size()) + 1;
+		const uint32_t maxSetCount = static_cast<uint32_t>(glTFModel.images.size()) + 2;
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, maxSetCount);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
 
@@ -871,12 +893,14 @@ public:
 		
 		// Descriptor set layout for passing skin joint matrices
 		setLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 0);
+		descriptorSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(&setLayoutBinding,1);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCI, nullptr, &descriptorSetLayouts.jointMatrices));
 		
 		// Pipeline layout using both descriptor sets (set 0 = matrices, set 1 = material)
-		std::array<VkDescriptorSetLayout, 2> setLayouts = {	
+		std::array<VkDescriptorSetLayout, 3> setLayouts = {	
 			descriptorSetLayouts.matrices, 
-			descriptorSetLayouts.textures};
+			descriptorSetLayouts.textures,
+			descriptorSetLayouts.jointMatrices };
 
 		VkPipelineLayoutCreateInfo pipelineLayoutCI= vks::initializers::pipelineLayoutCreateInfo(setLayouts.data(), static_cast<uint32_t>(setLayouts.size()));
 		// We will use push constants to push the local matrices of a primitive to the vertex shader
@@ -886,11 +910,13 @@ public:
 		pipelineLayoutCI.pPushConstantRanges = &pushConstantRange;
 		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout));
 
-		// Descriptor set for scene matrices
-		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.matrices, 1);
-		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
-		VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &shaderData.buffer.descriptor);
-		vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
+		{
+			// Descriptor set for scene matrices
+			VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.matrices, 1);
+			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
+			VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &shaderData.buffer.descriptor);
+			vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
+		}
 		// Descriptor sets for materials
 		for (auto& material: glTFModel.materials) {
 			const VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.textures, 1);
@@ -913,19 +939,18 @@ public:
 					vks::initializers::writeDescriptorSet(material.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &colorMap),
 					vks::initializers::writeDescriptorSet(material.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, &MRMap),
 					vks::initializers::writeDescriptorSet(material.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, &NormalMap)
+					//vks::initializers::writeDescriptorSet(material.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, &EmissiveMap)
 				};
 			}
-			//VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(material.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, image.binding, &image.texture.descriptor);
-
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 		}
-		/*
-		for (auto &skin : glTFModel.nodes) {
+		{
 			const VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.jointMatrices, 1);
-			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &skin->descriptorSet));
-			VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(skin->descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &skin->ssbo.descriptor);
+			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &glTFModel.skin.descriptorSet));
+			VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(glTFModel.skin.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &glTFModel.skin.ssbo.descriptor);
 			vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
-		}*/
+		}
+
 	}
 
 	void preparePipelines()
@@ -949,6 +974,7 @@ public:
 			vks::initializers::vertexInputAttributeDescription(0, 2, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, uv)),	// Location 2: Texture coordinates
 			vks::initializers::vertexInputAttributeDescription(0, 3, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, color)),	// Location 3: Color
 			vks::initializers::vertexInputAttributeDescription(0, 4, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, tangent)),
+			vks::initializers::vertexInputAttributeDescription(0, 5, VK_FORMAT_R8_UINT, offsetof(VulkanglTFModel::Vertex, jointIndex))
 		};
 		VkPipelineVertexInputStateCreateInfo vertexInputStateCI = vks::initializers::pipelineVertexInputStateCreateInfo();
 		vertexInputStateCI.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexInputBindings.size());
@@ -1023,9 +1049,7 @@ public:
 	{
 		renderFrame();
 		if (camera.updated) {
-			updateUniformBuffers();
-			buildCommandBuffers();
-		}
+			updateUniformBuffers();		}
 		if (!paused) {
 			glTFModel.updateAnimation(frameTimer);
 		}
@@ -1042,13 +1066,13 @@ public:
 			if (overlay->checkBox("Wireframe", &wireframe)) {
 				buildCommandBuffers();
 			}
-			if (overlay->sliderFloat("LightX", &shaderData.values.lightPos.x, -5.0f, 5.0f)) {
+			if (overlay->sliderFloat("LightX", &shaderData.values.lightPos.x, -10.0f, 10.0f)) {
 				buildCommandBuffers();
 			}
-			if (overlay->sliderFloat("LightY", &shaderData.values.lightPos.y, -5.0f, 5.0f)) {
+			if (overlay->sliderFloat("LightY", &shaderData.values.lightPos.y, -10.0f, 10.0f)) {
 				buildCommandBuffers();
 			}
-			if (overlay->sliderFloat("LightZ", &shaderData.values.lightPos.z, -5.0f, 5.0f)) {
+			if (overlay->sliderFloat("LightZ", &shaderData.values.lightPos.z, -10.0f, 10.0f)) {
 				buildCommandBuffers();
 			}
 			if (overlay->sliderFloat("LightIntensity", &shaderData.values.lightPos.w, 0.0f, 5.0f)) {
