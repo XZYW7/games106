@@ -17,9 +17,7 @@ layout (set = 0, binding = 0) uniform UBOScene
 layout(push_constant) uniform PushConsts {
 	mat4 model;
 } primitive;
-layout(std430, set = 2, binding = 0) readonly buffer JointMatrice {
-	mat4 jointMatrice;
-};
+
 layout (location = 0) out vec3 outNormal;
 layout (location = 1) out vec3 outColor;
 layout (location = 2) out vec2 outUV;
@@ -30,7 +28,7 @@ void main()
 	outNormal = inNormal;
 	outColor = inColor;
 	outUV = inUV;
-	gl_Position = uboScene.projection * uboScene.view * primitive.model * jointMatrice*vec4(inPos.xyz, 1.0);
+	gl_Position = uboScene.projection * uboScene.view * primitive.model *vec4(inPos.xyz, 1.0);
 	
 	vec4 pos = primitive.model * vec4(inPos, 1.0);
 	outNormal = mat3(primitive.model) * inNormal;

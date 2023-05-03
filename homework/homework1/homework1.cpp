@@ -91,7 +91,8 @@ public:
 		VkDescriptorSet descriptorSet;
 
 		glm::mat4 getLocalMatrix() {
-			return glm::translate(glm::mat4(1.0f), translation) * glm::mat4(rotation) * glm::scale(glm::mat4(1.0f), scale) * matrix;
+			return glm::translate(glm::mat4(1.0f), translation) * glm::mat4(rotation) * glm::scale(glm::mat4(1.0f), scale)*matrix;//
+			//
 		}
 		~Node() {
 			for (auto& child : children) {
@@ -258,14 +259,13 @@ public:
 		// Get the local node matrix
 		// It's either made up from translation, rotation, scale or a 4x4 matrix
 		if (inputNode.translation.size() == 3) {
-			node->matrix = glm::translate(node->matrix, glm::vec3(glm::make_vec3(inputNode.translation.data())));
+			node->translation = glm::make_vec3(inputNode.translation.data());
 		}
 		if (inputNode.rotation.size() == 4) {
-			glm::quat q = glm::make_quat(inputNode.rotation.data());
-			node->matrix *= glm::mat4(q);
+			node->rotation = glm::make_quat(inputNode.rotation.data());
 		}
 		if (inputNode.scale.size() == 3) {
-			node->matrix = glm::scale(node->matrix, glm::vec3(glm::make_vec3(inputNode.scale.data())));
+			node->scale = glm::make_vec3(inputNode.scale.data());
 		}
 		if (inputNode.matrix.size() == 16) {
 			node->matrix = glm::make_mat4x4(inputNode.matrix.data());
@@ -508,7 +508,7 @@ public:
 
 		// Update ssbo
 		node->ssbo.copyTo(&jointMatrices, sizeof(glm::mat4));
-
+		
 		for (auto& child : node->children) {
 			updateJoints(child);
 		}
@@ -560,7 +560,7 @@ public:
 			}
 		}
 		for (auto& node : nodes) {
-			updateJoints(node);
+			//updateJoints(node);
 		}
 	}
 	// Draw a single node including child nodes (if present)
@@ -570,13 +570,14 @@ public:
 			// Pass the node's matrix via push constants
 			// Traverse the node hierarchy to the top-most parent to get the final matrix of the current node
 			glm::mat4 nodeMatrix = node->matrix;
-
+			/*
 			VulkanglTFModel::Node* currentParent = node->parent;
 			while (currentParent) {
 				nodeMatrix = currentParent->matrix * nodeMatrix;
 				currentParent = currentParent->parent;
-			}
+			}*/
 
+			nodeMatrix = getNodeMatrix(node);
 			// Pass the final matrix to the vertex shader using push constants
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &nodeMatrix);
 			
@@ -595,7 +596,7 @@ public:
 					//vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &images[MR_texture.imageIndex].descriptorSet, 0, nullptr);
 				}
 			}
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &node->descriptorSet, 0, nullptr);
+			//vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &node->descriptorSet, 0, nullptr);
 		}
 		for (auto& child : node->children) {
 			drawNode(commandBuffer, pipelineLayout, child);
@@ -873,10 +874,9 @@ public:
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCI, nullptr, &descriptorSetLayouts.jointMatrices));
 		
 		// Pipeline layout using both descriptor sets (set 0 = matrices, set 1 = material)
-		std::array<VkDescriptorSetLayout, 3> setLayouts = {	
+		std::array<VkDescriptorSetLayout, 2> setLayouts = {	
 			descriptorSetLayouts.matrices, 
-			descriptorSetLayouts.textures,
-			descriptorSetLayouts.jointMatrices };
+			descriptorSetLayouts.textures};
 
 		VkPipelineLayoutCreateInfo pipelineLayoutCI= vks::initializers::pipelineLayoutCreateInfo(setLayouts.data(), static_cast<uint32_t>(setLayouts.size()));
 		// We will use push constants to push the local matrices of a primitive to the vertex shader
@@ -919,13 +919,13 @@ public:
 
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 		}
-
+		/*
 		for (auto &skin : glTFModel.nodes) {
 			const VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.jointMatrices, 1);
 			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &skin->descriptorSet));
 			VkWriteDescriptorSet writeDescriptorSet = vks::initializers::writeDescriptorSet(skin->descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &skin->ssbo.descriptor);
 			vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
-		}
+		}*/
 	}
 
 	void preparePipelines()
@@ -1024,6 +1024,7 @@ public:
 		renderFrame();
 		if (camera.updated) {
 			updateUniformBuffers();
+			buildCommandBuffers();
 		}
 		if (!paused) {
 			glTFModel.updateAnimation(frameTimer);
