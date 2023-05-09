@@ -151,7 +151,7 @@ void main()
 	vec3 Lo = BRDF(L, V, N, metallic, roughness, albedo);
 	
 	// Combine with ambient
-	vec3 color = albedo * 0.02 * ao;
+	vec3 color = albedo * 0.02 * ao ;
 	color += Lo;
 	vec3 emissive = texture(samplerEmissiveMap, inUV).xyz * uboScene.lightPos.w;
 	color += emissive;
@@ -160,7 +160,9 @@ void main()
 	color = Tonemap_ACES(color * 1.0);
 	// Gamma correction
 	color = LinearToGamma(color);
-
-	outFragColor = vec4(color,1.0);		
+	float alpha = texture(samplerColorMap, inUV).a;
+	if(alpha < 0.9&&alpha>0.2)
+		discard;
+	outFragColor = vec4(color,1);
 }
 
